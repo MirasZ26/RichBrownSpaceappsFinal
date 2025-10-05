@@ -1,4 +1,4 @@
-# A World Away: Hunting for Exoplanets with AI (Kepler)
+# A World Away: Hunting for Exoplanets with AI (Kepler → TESS-ready)
 
 End-to-end starter kit: tabular ML that classifies exoplanet candidates (CONFIRMED / CANDIDATE / FALSE POSITIVE) from NASA Kepler Cumulative first, with a clean path to add TESS TOI later via a canonical schema mapper.
 
@@ -14,7 +14,7 @@ pip install -r requirements.txt
 
 3) **Train**:
 ```bash
-python train_kepler.py --csv data/kepler_cumulative.csv --out_dir models/
+python train_ensemble.py --csv data/kepler_cumulative.csv --out_dir models/
 ```
 
 4) **Run the app**:
