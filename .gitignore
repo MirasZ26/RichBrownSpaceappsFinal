@@ -12,3 +12,7 @@ __pycache__/
 *.egg-info/
 .ipynb_checkpoints/
 .pytest_cache/
+
+!/data/kepler_cumulative.csv
+!/data/user_added.csv
+!/data/TOI*.csv
