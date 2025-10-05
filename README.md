@@ -1,4 +1,4 @@
-# A World Away: Hunting for Exoplanets with AI (Kepler → TESS-ready)
+# A World Away: Hunting for Exoplanets with AI (Kepler)
 
 End-to-end starter kit: tabular ML that classifies exoplanet candidates (CONFIRMED / CANDIDATE / FALSE POSITIVE) from NASA Kepler Cumulative first, with a clean path to add TESS TOI later via a canonical schema mapper.
 
