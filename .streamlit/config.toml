@@ -1,0 +1,7 @@
+[theme]
+base="dark"
+primaryColor="#FFE8A3"       # butter accent
+backgroundColor="#0A0E3F"    # deep navy
+secondaryBackgroundColor="#151A54"
+textColor="#E8EBFF"
+font="sans serif"
