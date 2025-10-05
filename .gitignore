@@ -5,18 +5,7 @@ env/
 myenv/
 
 # model artifacts
-models/
-*.joblib
-*.pkl
-*.pickle
-*.sav
-*.pt
-*.h5
-*.ckpt
-*.onnx
-*.bin
-*.npz
-*.npy
+
 
 
 # Python junk
