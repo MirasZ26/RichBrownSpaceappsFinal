@@ -1,6 +1,10 @@
-# train_ensemble.py
-import json, joblib, numpy as np, pandas as pd
+# train_ensemble.py — Kepler-only stacked ensemble (saves to models/)
+import json
+import joblib
+import numpy as np
+import pandas as pd
 from pathlib import Path
+from pandas.errors import ParserError
 
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
@@ -8,134 +12,172 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier, StackingClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, StackingClassifier
+from sklearn.metrics import accuracy_score, classification_report
 
+# Optional XGBoost as one of the base learners
 try:
     from xgboost import XGBClassifier
     HAS_XGB = True
 except Exception:
     HAS_XGB = False
 
-# ---- project imports
+# Project imports
 from schema_map import to_canonical, CANON_KEYS
 from data_prep import engineer_features
 
 BASE = Path(__file__).resolve().parent
-OUT  = BASE / "models" / "ensemble"
+DATA = BASE / "data" / "kepler_cumulative.csv"
+OUT  = BASE / "models"                      # <— save directly in models/
 OUT.mkdir(parents=True, exist_ok=True)
 
-# -------------------------------
-# 1) Load Kepler + (optional) TESS
-# -------------------------------
-kpath = BASE / "data" / "kepler_cumulative.csv"
+# ----------------------------------------------------------------------
+# Robust CSV reader (handles minor quirks gracefully)
+# ----------------------------------------------------------------------
+def _safe_read(path: Path, **kwargs) -> pd.DataFrame:
+    """Call pd.read_csv with version-safe arguments."""
+    try:
+        return pd.read_csv(path, **kwargs)
+    except TypeError:
+        # Drop args that older pandas don’t understand
+        kwargs2 = dict(kwargs)
+        kwargs2.pop("on_bad_lines", None)
+        if kwargs2.get("engine") == "python":
+            kwargs2.pop("low_memory", None)
+        # Legacy flags for very old pandas (harmless otherwise)
+        kwargs2.setdefault("error_bad_lines", False)
+        kwargs2.setdefault("warn_bad_lines", False)
+        return pd.read_csv(path, **kwargs2)
 
-# Try the exact TESS file; if not present, pick the newest TOI*.csv in /data
-tpath = BASE / "data" / "TOI_2025.10.04_21.07.34.csv"
-if not tpath.exists():
-    cand = sorted((BASE / "data").glob("TOI*.csv"))
-    tpath = cand[-1] if cand else None
+def smart_read_csv(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    # 1) fast path
+    try:
+        df = _safe_read(path, low_memory=False, on_bad_lines="skip")
+    except ParserError:
+        # 2) python engine with sniffed delimiter
+        try:
+            df = _safe_read(
+                path, sep=None, engine="python",
+                on_bad_lines="skip", comment="#", skip_blank_lines=True,
+                encoding_errors="ignore"
+            )
+        except (ParserError, ValueError):
+            # 3) tab fallback
+            try:
+                df = _safe_read(
+                    path, sep="\t", engine="python",
+                    on_bad_lines="skip", comment="#", skip_blank_lines=True,
+                    encoding_errors="ignore"
+                )
+            except Exception:
+                # 4) semicolon fallback
+                df = _safe_read(
+                    path, sep=";", engine="python",
+                    on_bad_lines="skip", comment="#", skip_blank_lines=True,
+                    encoding_errors="ignore"
+                )
+    # Normalize headers (lowercase) for mapping
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    return df
 
-frames = []
-if kpath.exists():
-    print(f"[load] Kepler CSV: {kpath}")
-    frames.append(pd.read_csv(kpath, low_memory=False).assign(__src="kepler"))
-else:
-    print(f"[load] Kepler CSV missing at: {kpath}")
-
-if tpath and Path(tpath).exists():
-    print(f"[load] TESS CSV:   {tpath}")
-    frames.append(pd.read_csv(tpath, low_memory=False).assign(__src="tess"))
-else:
-    print(f"[load] TESS CSV not found. Skipping.")
-
-df_raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+# ----------------------------------------------------------------------
+# 1) Load Kepler ONLY
+# ----------------------------------------------------------------------
+print(f"[load] Kepler CSV: {DATA}")
+df_raw = smart_read_csv(DATA)
 if df_raw.empty:
-    raise FileNotFoundError(
-        "No training data found. Looked for:\n"
-        f" - {kpath}\n"
-        f" - {tpath if tpath else '(no TOI*.csv found)'}\n"
-        "Put your files under <repo>/data/ and re-run."
-    )
-print(f"[load] Combined rows: {len(df_raw):,}")
+    raise SystemExit("Kepler CSV is empty or unreadable. Put it at data/kepler_cumulative.csv")
 
-# ----------------------------------------
-# 2) Canonicalize + engineer + pick columns
-# ----------------------------------------
-canon = to_canonical(df_raw, source=None)
+# ----------------------------------------------------------------------
+# 2) Canonicalize + engineer features
+# ----------------------------------------------------------------------
+# Force kepler mapping so TESS is never used
+canon = to_canonical(df_raw, source="kepler")
 canon = engineer_features(canon)
 
-# Feature list: canonical + engineered (if present)
+# ----------------------------------------------------------------------
+# 3) Feature / label selection
+# ----------------------------------------------------------------------
 feat_cols = [c for c in canon.columns if c in CANON_KEYS and c != "label"]
-for extra in ["depth_vs_ror2_abs", "duration_over_period", "duration_over_aRs"]:
-    if extra in canon.columns:
+for extra in ["depth_vs_ror2_abs", "duration_over_period", "duration_over_aRs", "duration_over_ars"]:
+    if extra in canon.columns and extra not in feat_cols:
         feat_cols.append(extra)
-feat_cols = sorted(set(feat_cols))
-if not feat_cols:
-    raise ValueError("No usable feature columns found after canonicalization. Check schema_map mappings.")
 
-# ----------------------------
-# 3) Map labels → integers 0/1/2
-# ----------------------------
-LAB2ID = {"FALSE POSITIVE": 0, "CANDIDATE": 1, "CONFIRMED": 2}
+# labels → integers {FP:0, CANDIDATE:1, CONFIRMED:2}
+if "label" not in canon.columns or canon["label"].isna().all():
+    raise SystemExit("No labels found in Kepler data after canonicalization.")
 
-label_str = canon.get("label", pd.Series(index=canon.index, dtype=object)).astype(str).str.upper()
-label_id = label_str.map(LAB2ID)
+canon = canon.dropna(subset=["label"]).copy()
+if canon["label"].dtype == object or str(canon["label"].dtype).startswith("string"):
+    LBL_TO_INT = {"FALSE POSITIVE": 0, "CANDIDATE": 1, "CONFIRMED": 2,
+                  "FP": 0, "PC": 1, "CP": 2}
+    canon["label"] = canon["label"].astype(str).str.upper().map(LBL_TO_INT)
 
-# Keep only rows with known labels
-mask_labeled = label_id.notna()
-canon = canon.loc[mask_labeled].copy()
-label_id = label_id.loc[mask_labeled]
-
-if canon.empty:
-    raise ValueError("No labeled rows after canonicalization. Verify label fields in schema_map for your CSVs.")
+if canon["label"].isna().any():
+    bad = int(canon["label"].isna().sum())
+    raise SystemExit(f"{bad} rows have unmapped labels. Clean/standardize koi_disposition first.")
 
 X = canon[feat_cols].copy()
-y = label_id.astype(int)
+y = canon["label"].astype(int)
 
-print(f"[data] Features: {len(feat_cols)}; Rows: {len(X):,}")
-print("[data] Class balance:", dict(pd.Series(y).value_counts().sort_index().to_dict()))
-
-# --------------------------------------------
-# 4) Preprocess (impute + scale for linear part)
-# --------------------------------------------
+# ----------------------------------------------------------------------
+# 4) Preprocess + base learners (diverse types)
+# ----------------------------------------------------------------------
 pre = Pipeline([
     ("imp", SimpleImputer(strategy="median")),
-    ("sc", StandardScaler(with_mean=True, with_std=True))
+    ("sc",  StandardScaler(with_mean=True, with_std=True))
 ])
 
-# -------------------------------
-# 5) Base learners for stacking
-# -------------------------------
 learners = []
+
 if HAS_XGB:
     learners.append(("xgb", XGBClassifier(
-        n_estimators=400, max_depth=6, subsample=0.7, colsample_bytree=0.8,
-        learning_rate=0.05, reg_lambda=1.0, eval_metric="mlogloss",
-        n_jobs=-1, tree_method="hist", random_state=42
+        objective="multi:softprob",
+        eval_metric="mlogloss",
+        n_estimators=500,
+        max_depth=6,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        learning_rate=0.05,
+        reg_lambda=1.0,
+        n_jobs=-1,
+        tree_method="hist",
+        random_state=42
     )))
+
 learners.append(("rf", RandomForestClassifier(
-    n_estimators=600, max_depth=None, min_samples_leaf=2, n_jobs=-1,
-    class_weight="balanced_subsample", random_state=42
+    n_estimators=800,
+    max_depth=None,
+    min_samples_leaf=2,
+    n_jobs=-1,
+    class_weight="balanced_subsample",
+    random_state=42
 )))
-learners.append(("lr", LogisticRegression(
-    max_iter=2000, multi_class="multinomial", C=1.0
+
+learners.append(("gb", GradientBoostingClassifier(
+    n_estimators=300,
+    learning_rate=0.05,
+    max_depth=3,
+    random_state=42
 )))
+
+meta_lr = LogisticRegression(max_iter=3000, multi_class="multinomial")
 
 stack = StackingClassifier(
     estimators=learners,
-    final_estimator=LogisticRegression(max_iter=2000, multi_class="multinomial", C=1.0, random_state=42),
+    final_estimator=meta_lr,
     passthrough=True,
     n_jobs=-1
 )
 
-# ---------------------------------------------
-# 6) Train/val split → stack → probability cal
-# ---------------------------------------------
-# Need at least 2 classes to proceed
-if len(np.unique(y)) < 2:
-    raise ValueError(f"Training set has <2 classes (found {np.unique(y)}). You need at least two classes present.")
-
-Xtr, Xva, ytr, yva = train_test_split(X, y, test_size=0.2, stratify=y, random_state=42)
+# ----------------------------------------------------------------------
+# 5) Train/validate with calibration
+# ----------------------------------------------------------------------
+Xtr, Xva, ytr, yva = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
 
 pre.fit(Xtr, ytr)
 Xtr_p = pre.transform(Xtr)
@@ -143,33 +185,27 @@ Xva_p = pre.transform(Xva)
 
 stack.fit(Xtr_p, ytr)
 
-# Isotonic may fail if each class isn’t present adequately in folds; fall back to sigmoid
-try:
-    cal = CalibratedClassifierCV(stack, method="isotonic", cv=5)
-    cal.fit(Xva_p, yva)
-except ValueError as e:
-    print("[warn] Isotonic calibration failed:", e, "→ Falling back to sigmoid.")
-    cal = CalibratedClassifierCV(stack, method="sigmoid", cv=5)
-    cal.fit(Xva_p, yva)
+cal = CalibratedClassifierCV(stack, method="isotonic", cv=5)
+cal.fit(Xva_p, yva)
 
-# quick val accuracy
-from sklearn.metrics import accuracy_score
-pred_va = cal.predict(Xva_p)
-acc = accuracy_score(yva, pred_va)
-print(f"[val] Accuracy: {acc*100:.2f}% on {len(yva)} rows")
+yhat = cal.predict(Xva_p)
+acc = accuracy_score(yva, yhat)
+print(f"[holdout] accuracy = {acc*100:.2f}%")
+print(classification_report(yva, yhat, digits=3))
 
-# ----------------
-# 7) Save artifacts
-# ----------------
+# ----------------------------------------------------------------------
+# 6) Save artifacts for the Streamlit app (direct to models/)
+# ----------------------------------------------------------------------
 joblib.dump(pre, OUT / "preproc.pkl")
 joblib.dump(cal, OUT / "model.pkl")
 
 meta = {
     "features": feat_cols,
     "labels": {0: "FALSE POSITIVE", 1: "CANDIDATE", 2: "CONFIRMED"},
-    "source_mix": df_raw["__src"].value_counts().to_dict(),
-    "note": "Stacked ensemble (XGB+RF+LR) with probability calibration (isotonic/sigmoid fallback).",
-    "val_accuracy": acc
+    "source_mix": {"kepler": int(len(canon))},
+    "note": "Kepler-only stacked ensemble (XGB+RF+GB) with isotonic calibration."
 }
 (OUT / "metadata.json").write_text(json.dumps(meta, indent=2))
-print("Saved to:", OUT)
+
+print("Saved artifacts to:", OUT.resolve())
+print("➡ In the app, set Model directory to:", OUT)

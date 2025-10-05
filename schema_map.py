@@ -11,6 +11,7 @@ CANON_KEYS = [
 
 MIN_REQUIRED = ["period_days", "duration_hours", "depth_ppm", "ror", "a_over_rstar", "snr"]
 
+# All mapping keys below are LOWERCASE (we lowercase incoming headers first).
 SOURCE_MAPS: Dict[str, Dict[str, List[str]]] = {
     "kepler": {
         "period_days":   ["koi_period"],
@@ -31,6 +32,7 @@ SOURCE_MAPS: Dict[str, Dict[str, List[str]]] = {
         "label":         ["koi_disposition"],
     },
     "tess": {
+        # common TOI synonyms; all lowercased
         "period_days":   ["toi_period", "orbital_period", "pl_orbper"],
         "duration_hours":["toi_duration", "transit_duration"],
         "depth_ppm":     ["toi_depth"],
@@ -67,9 +69,11 @@ LABEL_MAPS = {
 }
 
 def detect_source(df: pd.DataFrame) -> Optional[str]:
-    if any(c.startswith("koi_") for c in df.columns):
+    cols = set(df.columns)
+    # we lowercase headers before calling this
+    if any(str(c).startswith("koi_") for c in cols):
         return "kepler"
-    if any(k in df.columns for k in ["tfopwg_disp", "toi_id", "toi_period"]):
+    if any(k in cols for k in ["tfopwg_disp", "toi_id", "toi_period", "disposition"]):
         return "tess"
     return None
 
@@ -80,6 +84,10 @@ def _first_present(df: pd.DataFrame, candidates: List[str]):
     return None
 
 def to_canonical(df: pd.DataFrame, source: Optional[str] = None) -> pd.DataFrame:
+    # 🔧 Normalize headers first so detection/mapping is robust
+    df = df.copy()
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
     if source is None:
         source = detect_source(df)
     if source is None:
@@ -91,14 +99,19 @@ def to_canonical(df: pd.DataFrame, source: Optional[str] = None) -> pd.DataFrame
         s = _first_present(df, candidates)
         if s is not None:
             out[key] = s
+
     canon = pd.DataFrame(out)
 
+    # numeric coercion
     for col in canon.columns:
         if col != "label":
             canon[col] = pd.to_numeric(canon[col], errors="coerce")
 
+    # standardize labels to unified strings (CONFIRMED/CANDIDATE/FALSE POSITIVE)
     if "label" in canon.columns:
         lmap = LABEL_MAPS.get(source, {})
-        canon["label"] = canon["label"].astype(str).str.upper().map(lambda x: lmap.get(x, x))
+        canon["label"] = (
+            canon["label"].astype(str).str.upper().map(lambda x: lmap.get(x, x))
+        )
 
     return canon

@@ -1,3 +1,4 @@
+# app_streamlit.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -25,7 +26,27 @@ PRIMARY = "#FFE8A3"
 NAVY = "#0A0E3F"
 PURPLE = "#151A54"
 
+# Human-friendly labels for manual inputs
+DISPLAY_LABELS = {
+    "period_days":  "Orbital period (days)",
+    "duration_hours":"Transit duration (hours)",
+    "depth_ppm":    "Transit depth (ppm)",
+    "ror":          "Planet/star radius ratio, Rp/R*",
+    "a_over_rstar": "Scaled semi-major axis, a/R*",
+    "impact_b":     "Impact parameter, b",
+    "snr":          "Transit SNR",
+    "num_transits": "Number of transits (N)",
+    "teff_K":       "Stellar effective temperature (K)",
+    "logg":         "Stellar surface gravity log g (cgs)",
+    "feh":          "Stellar metallicity [Fe/H] (dex)",
+    "rstar_rsun":   "Stellar radius (R☉)",
+    "mstar_msun":   "Stellar mass (M☉)",
+    "insol_earth":  "Insolation (Earth = 1)",
+    "teq_K":        "Planetary equilibrium temperature Teq (K)",
+}
+
 def inject_css():
+    # NOTE: change the Terramicus brand size here (font-size)
     st.markdown(f"""
     <style>
     .teramicus-nav {{
@@ -33,20 +54,20 @@ def inject_css():
         border: 1px solid rgba(255,255,255,0.08);
         border-radius: 14px;
         padding: 10px 16px;
-        margin-bottom: 10px;
+        margin-bottom: 14px;
         backdrop-filter: blur(8px);
     }}
     .brand {{
-        font-weight: 700;
-        font-size: 22px;
+        font-weight: 800;
+        font-size: 48px;     /* <— change brand size here */
         letter-spacing: 0.5px;
         color: {PRIMARY};
     }}
     .hero {{
-        background: linear-gradient(180deg, rgba(10,14,63,0.0) 0%, rgba(10,14,63,0.35) 100%);
+        background: linear-gradient(180deg, rgba(10,14,63,0.10) 0%, rgba(10,14,63,0.35) 100%);
         border: 1px solid rgba(255,255,255,0.08);
         border-radius: 18px;
-        padding: 32px;
+        padding: 28px 28px 24px 28px;
         margin-top: 8px;
     }}
     .cta {{
@@ -54,16 +75,29 @@ def inject_css():
         font-weight: 700;
         color: #111;
         background: {PRIMARY};
-        padding: 12px 20px;
+        padding: 10px 18px;
         border-radius: 14px;
         border: 0;
     }}
     .bigtitle {{ font-size: 54px; line-height: 1.06; font-weight: 800; }}
-    .subtitle {{ font-size: 22px; opacity: 0.9; }}
+    .subtitle {{ font-size: 20px; opacity: 0.9; }}
     .pill {{
         background: rgba(255,255,255,0.06);
         border: 1px solid rgba(255,255,255,0.08);
         padding: 6px 10px; border-radius: 12px; display: inline-block;
+    }}
+    /* Make nav buttons look like pills */
+    .navbtn > button {{
+        background: rgba(255,255,255,0.06) !important;
+        border: 1px solid rgba(255,255,255,0.1) !important;
+        color: #fff !important;
+        border-radius: 12px !important;
+        padding: 6px 14px !important;
+    }}
+    .navbtn-active > button {{
+        background: {PRIMARY} !important;
+        color: #111 !important;
+        border: 0 !important;
     }}
     </style>
     """, unsafe_allow_html=True)
@@ -76,7 +110,6 @@ SHOW_COLS = [
     "teff_K","rstar_rsun","mstar_msun","insol_earth","teq_K",
     "snr","num_transits","impact_b"
 ]
-
 SIM_FEATURES = SHOW_COLS[:]  # reuse
 
 LBL_MAP = {0: "FALSE POSITIVE", 1: "CANDIDATE", 2: "CONFIRMED"}
@@ -86,7 +119,6 @@ def to_text_label(x):
         return LBL_MAP.get(i, str(x)).upper()
     except Exception:
         s = str(x).upper()
-        # normalize common forms
         repl = {"FP":"FALSE POSITIVE", "FALSE_POSITIVE":"FALSE POSITIVE"}
         return repl.get(s, s)
 
@@ -244,33 +276,42 @@ def find_similar(candidate_vals: dict, db: pd.DataFrame):
 
 # ---------- Top navbar ----------
 def top_nav():
-    with st.container():
-        st.markdown('<div class="teramicus-nav">', unsafe_allow_html=True)
-        cols = st.columns([2,2,1.2,1.4,1.6,3])
-        with cols[0]:
-            st.markdown('<div class="brand">Terramicus</div>', unsafe_allow_html=True)
-        with cols[2]:
-            st.markdown("<div class='pill'>Home</div>", unsafe_allow_html=True)
-        with cols[3]:
-            st.markdown("<div class='pill'>Prediction</div>", unsafe_allow_html=True)
-        with cols[4]:
-            st.markdown("<div class='pill'>DB view</div>", unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # actual page selector (clean radio, top, horizontal)
+    # rounded nav box + real buttons that navigate
+    st.markdown('<div class="teramicus-nav">', unsafe_allow_html=True)
+    cols = st.columns([2.5, 1.0, 1.0, 1.0, 6])
     if "active_page" not in st.session_state:
         st.session_state["active_page"] = "Home"
-    page = st.radio("", ["Home", "Prediction", "DB view"],
-                    index=["Home","Prediction","DB view"].index(st.session_state["active_page"]),
-                    horizontal=True, label_visibility="collapsed", key="page_radio")
-    st.session_state["active_page"] = page
-    return page
+
+    with cols[0]:
+        st.markdown('<div class="brand">Terramicus</div>', unsafe_allow_html=True)
+
+    # helper to render a nav button with active style
+    def nav_button(label, target):
+        key = f"nav_{target.replace(' ','_')}"
+        klass = "navbtn navbtn-active" if st.session_state["active_page"] == target else "navbtn"
+        st.markdown(f'<div class="{klass}">', unsafe_allow_html=True)
+        clicked = st.button(label, key=key)
+        st.markdown('</div>', unsafe_allow_html=True)
+        if clicked:
+            st.session_state["active_page"] = target
+            st.rerun()
+
+    with cols[1]:
+        nav_button("Home", "Home")
+    with cols[2]:
+        nav_button("Prediction", "Prediction")
+    with cols[3]:
+        nav_button("DB view", "DB view")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+    return st.session_state["active_page"]
 
 # ---------- Pages ----------
 def render_home():
     st.markdown("<br/>", unsafe_allow_html=True)
     c1, c2 = st.columns([1.2, 1])
     with c1:
+        # headline boxed inside hero
         st.markdown("<div class='hero'>", unsafe_allow_html=True)
         st.markdown("<div class='bigtitle'>Searching for a new <span style='color:#FFE8A3'>home</span> for humanity.</div>", unsafe_allow_html=True)
         st.markdown("<div class='subtitle'>Analyze Kepler/TESS candidates, visualize habitability, and grow your exoplanet database.</div>", unsafe_allow_html=True)
@@ -278,8 +319,14 @@ def render_home():
             st.session_state["active_page"] = "Prediction"
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown("### Contact")
+
+        st.markdown("### Contact for troubleshooting")
         st.write("📧 zhansarin.m@nisa.edu.kz")
+        st.write("📧 kzylbayev.a@nisa.edu.kz")
+        st.write("📧 essengali.a@nisa.edu.kz")
+        st.write("📧 tleshov.a@nisa.edu.kz")
+        st.write("📧 sabyr.a@nisa.edu.kz")
+
     with c2:
         img_path = ASSETS_DIR / "hero.jpg"
         if img_path.exists():
@@ -330,6 +377,17 @@ def render_prediction():
                 st.session_state["model_loaded"] = True
                 st.session_state["model_dir"] = model_dir
                 st.session_state["classes"] = list(model.classes_)
+                # Show model accuracy here (if metadata stores it)
+                acc = None
+                if isinstance(meta, dict):
+                    metrics = meta.get("metrics", {})
+                    for k in ("cv_acc","accuracy","valid_acc","val_acc"):
+                        if k in meta: 
+                            acc = meta[k]; break
+                        if k in metrics:
+                            acc = metrics[k]; break
+                if acc is not None:
+                    st.metric("Model accuracy", f"{float(acc)*100:.1f}%")
                 st.success("Model loaded!")
             except Exception as e:
                 st.error(f"Failed to load model: {e}")
@@ -344,7 +402,7 @@ def render_prediction():
 
     # ---------- CSV Upload ----------
     with tabs[0]:
-        st.write("Upload Kepler (or mapped TESS) CSV. We'll auto-detect source and map to canonical schema.")
+        st.write("Upload Kepler/TESS CSV. We auto-detect source and map to canonical schema.")
         upl = st.file_uploader("CSV file", type=["csv"])
         if upl is not None:
             raw = pd.read_csv(upl)
@@ -360,7 +418,7 @@ def render_prediction():
                 X = X.fillna(X.median(numeric_only=True))
 
                 # Predict all rows (2D proba)
-                proba = model.predict_proba(X)  # shape: (n_rows, n_classes)
+                proba = model.predict_proba(X)  # (n_rows, n_classes)
                 preds_raw = np.array(model.classes_)[np.argmax(proba, axis=1)]
                 preds_txt = [to_text_label(p) for p in preds_raw]
 
@@ -368,36 +426,10 @@ def render_prediction():
                 for i, cls in enumerate(model.classes_):
                     out[f"P({to_text_label(cls)})"] = proba[:, i]
                 out["pred_label"] = preds_txt
-                out["Confidence (%)"] = (np.max(proba, axis=1) * 100).round(1)
-
-                # If labels exist in the file, show accuracy; otherwise show avg confidence
-                acc = None
-                gt = None
-                for col in ("koi_disposition", "koi_pdisposition", "disposition", "db_class", "pred_label"):
-                    if col in raw.columns:
-                        gt = raw[col].astype(str).str.upper()
-                        break
-                    if col in canon.columns:
-                        gt = canon[col].astype(str).str.upper()
-                        break
-                if gt is not None:
-                    gt = gt.replace({"FP": "FALSE POSITIVE", "FALSE_POSITIVE": "FALSE POSITIVE"})
-                    try:
-                        acc = float((gt.values == np.array(preds_txt)).mean())
-                    except Exception:
-                        acc = None
 
                 st.write("### Predictions")
-                m1, m2 = st.columns(2)
-                m1.metric("Rows", len(out))
-                if acc is not None and np.isfinite(acc):
-                    m2.metric("Accuracy on uploaded labels", f"{acc*100:.1f}%")
-                else:
-                    m2.metric("Avg. confidence", f"{out['Confidence (%)'].mean():.1f}%")
-
+                st.metric("Rows", len(out))
                 st.dataframe(out.head(50), use_container_width=True)
-
-
 
                 # ---------- Habitability expander (single + multi overlay) ----------
                 with st.expander("Habitability position (relative to Earth)", expanded=False):
@@ -429,7 +461,7 @@ def render_prediction():
                             )
                             fig, info = make_plot(**kwargs)
                             st.pyplot(fig, clear_figure=True)
-                            st.caption(f"S = {info['S']:.2f} ⊕ · T_eq ≈ {info['Teq']:.0f} K (no greenhouse).")
+                            st.caption(f"S = {info['S']:.2f} ⊕ T_eq ≈ {info['Teq']:.0f} K (no greenhouse).")
                         else:
                             c1, c2 = st.columns(2)
                             pick = c1.selectbox(
@@ -438,7 +470,7 @@ def render_prediction():
                             )
                             if pick == "Star+Orbit":
                                 teff_i  = c1.number_input("Host-star Teff (K)", value=5600, step=50, key="hz_csv_teff")
-                                rstar_i = c1.number_input("Host-star radius (Rsun)", value=1.00, step=0.01, format="%.2f", key="hz_csv_rstar")
+                                rstar_i = c1.number_input("Host-star radius (R☉)", value=1.00, step=0.01, format="%.2f", key="hz_csv_rstar")
                                 a_over_r_i = c2.number_input("a / R*", value=10.0, step=0.1, key="hz_csv_aoverr")
                                 period_i   = c2.number_input("Orbital period (days)", value=10.0, step=0.1, key="hz_csv_period")
                                 mstar_i    = c2.number_input("Stellar mass (M☉)", value=1.00, step=0.01, key="hz_csv_mstar")
@@ -449,14 +481,14 @@ def render_prediction():
                                     albedo=albedo_csv
                                 )
                                 st.pyplot(fig, clear_figure=True)
-                                st.caption(f"S = {info['S']:.2f} ⊕ · T_eq ≈ {info['Teq']:.0f} K (no greenhouse).")
+                                st.caption(f"S = {info['S']:.2f} ⊕ T_eq ≈ {info['Teq']:.0f} K (no greenhouse).")
                             else:
                                 S_i = c1.number_input("S (starlight rel. Earth)", value=1.00, step=0.05, format="%.2f", key="hz_csv_S")
                                 fig, info = make_plot(name=f"Row {int(row_idx)}", S=S_i, albedo=albedo_csv)
                                 st.pyplot(fig, clear_figure=True)
-                                st.caption(f"S = {info['S']:.2f} ⊕ · T_eq ≈ {info['Teq']:.0f} K (no greenhouse).")
+                                st.caption(f"S = {info['S']:.2f} ⊕ T_eq ≈ {info['Teq']:.0f} K (no greenhouse).")
 
-                        # Multi-point overlay (with non-nesting legend control)
+                        # Multi-point overlay (non-nesting legend control)
                         st.markdown("—")
                         st.markdown("**Plot multiple rows on the same habitability diagram**")
                         overlay_idxs = st.multiselect(
@@ -515,7 +547,6 @@ def render_prediction():
                                 ax.scatter(S, Teq, s=80, label=label, alpha=0.95, zorder=5, color=color)
                                 overlay_labels.append((label, color))
 
-                            # Legend control (no nested expanders)
                             legend_mode = st.radio(
                                 "Legend display",
                                 ["Hidden", "On plot (outside)", "Collapsible list below"],
@@ -536,25 +567,12 @@ def render_prediction():
                                 st.pyplot(fig, clear_figure=True)
                                 show_list = st.checkbox("Show legend list (overlay points)", value=False, key="hz_csv_show_legend")
                                 if show_list:
-                                    st.caption("Hatched = too cold/hot; teal = conservative HZ; blue = optimistic HZ; Earth at S=1, T_eq≈255 K.")
+                                    st.caption("Hatched = too cold/hot; teal = conservative HZ; light blue = optimistic HZ; Earth at S=1, T_eq≈255 K.")
                                     for label, color in overlay_labels:
                                         st.markdown(f"<span style='color:{color}'>●</span> {label}", unsafe_allow_html=True)
 
                 # ---------- SHAP ----------
-                with st.expander("Explain first 3 predictions (SHAP)", expanded=False):
-                    try:
-                        explainer = shap.TreeExplainer(model)
-                        shap_values = explainer.shap_values(X.head(3))
-                        for i in range(min(3, len(X))):
-                            st.write(f"#### Row {i}")
-                            st.pyplot(shap.waterfall_plot(shap.Explanation(
-                                values=shap_values[np.argmax(proba[i])][i],
-                                base_values=explainer.expected_value[np.argmax(proba[i])],
-                                data=X.head(3).iloc[i].values,
-                                feature_names=X.columns.tolist()
-                            )))
-                    except Exception as e:
-                        st.info(f"SHAP explanation not shown: {e}")
+                
             except Exception as e:
                 st.error(f"Failed to map/predict: {e}")
 
@@ -572,10 +590,11 @@ def render_prediction():
         keys = [k for k in CANON_KEYS if k != "label"]
         for i, key in enumerate(keys):
             with cols[i % 3]:
+                label = DISPLAY_LABELS.get(key, key)
                 if key in ["num_transits"]:
-                    vals[key] = st.number_input(key, value=int(defaults.get(key, 0)), step=1)
+                    vals[key] = st.number_input(label, value=int(defaults.get(key, 0)), step=1)
                 else:
-                    vals[key] = st.number_input(key, value=float(defaults.get(key, 0.0)))
+                    vals[key] = st.number_input(label, value=float(defaults.get(key, 0.0)))
 
         if st.button("Predict (manual)"):
             one = pd.DataFrame([vals]); one = engineer_features(one)
@@ -583,17 +602,13 @@ def render_prediction():
             if not feat_names: feat_names = meta.get("features") if meta else pre.get("features")
             X = one[[c for c in feat_names if c in one.columns]].copy()
             X = X.fillna(X.median(numeric_only=True))
-            proba = model.predict_proba(X)[0]          # 1D vector for the single row
+            proba = model.predict_proba(X)[0]
             pred_idx = int(np.argmax(proba))
             pred_class = model.classes_[pred_idx]
             pred = to_text_label(pred_class)
-            conf = float(proba[pred_idx])
 
-            conf = float(np.max(proba))
-            m1, m2 = st.columns(2)
-            m1.metric("Predicted label", pred)
-            m2.metric("Confidence", f"{conf*100:.1f}%")
-
+            st.metric("Predicted label", pred)
+            # (keep detailed class probabilities for transparency)
             st.write({to_text_label(cls): float(p) for cls, p in zip(model.classes_, proba)})
 
             # save for add-to-DB
@@ -604,7 +619,6 @@ def render_prediction():
                 "classes": list(model.classes_),
                 "stamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             }
-
 
             # closest match in Kepler
             try:
@@ -637,23 +651,23 @@ def render_prediction():
                             star_radius_rsun=vals.get("rstar_rsun"), a_over_rstar=vals.get("a_over_rstar"),
                             period_days=vals.get("period_days"), mstar_msun=vals.get("mstar_msun"), albedo=albedo
                         )
-                        st.pyplot(fig, clear_figure=True); st.caption(f"S = {info['S']:.2f} ⊕ · T_eq ≈ {info['Teq']:.0f} K")
+                        st.pyplot(fig, clear_figure=True); st.caption(f"S = {info['S']:.2f} ⊕ T_eq ≈ {info['Teq']:.0f} K")
                     except Exception as e:
                         st.info(f"Unable to plot from inputs above: {e}")
                 elif mode == "Star+Orbit (override)":
                     teff_i  = c1.number_input("Host-star Teff (K)", value=float(vals.get("teff_K", 5600.0)), step=50, key="hz_man_teff")
-                    rstar_i = c1.number_input("Host-star radius (Rsun)", value=float(vals.get("rstar_rsun", 1.0)), step=0.01, format="%.2f", key="hz_man_rstar")
+                    rstar_i = c1.number_input("Host-star radius (R☉)", value=float(vals.get("rstar_rsun", 1.0)), step=0.01, format="%.2f", key="hz_man_rstar")
                     a_over_r_i = c2.number_input("a / R*", value=float(vals.get("a_over_rstar", 10.0)), step=0.1, key="hz_man_aoverr")
                     period_i   = c2.number_input("Orbital period (days)", value=float(vals.get("period_days", 10.0)), step=0.1, key="hz_man_period")
                     mstar_i    = c2.number_input("Stellar mass (M☉)", value=float(vals.get("mstar_msun", 1.0)), step=0.01, key="hz_man_mstar")
                     fig, info = make_plot(name="Manual candidate", star_teff_k=teff_i, star_radius_rsun=rstar_i,
                                           a_over_rstar=a_over_r_i, period_days=period_i, mstar_msun=mstar_i, albedo=albedo)
-                    st.pyplot(fig, clear_figure=True); st.caption(f"S = {info['S']:.2f} ⊕ · T_eq ≈ {info['Teq']:.0f} K")
+                    st.pyplot(fig, clear_figure=True); st.caption(f"S = {info['S']:.2f} ⊕ T_eq ≈ {info['Teq']:.0f} K")
                 else:
                     S_i = c1.number_input("S (starlight rel. Earth)", value=float(vals.get("insol_earth", 1.0)),
                                           step=0.05, format="%.2f", key="hz_man_S")
                     fig, info = make_plot(name="Manual candidate", S=S_i, albedo=albedo)
-                    st.pyplot(fig, clear_figure=True); st.caption(f"S = {info['S']:.2f} ⊕ · T_eq ≈ {info['Teq']:.0f} K")
+                    st.pyplot(fig, clear_figure=True); st.caption(f"S = {info['S']:.2f} ⊕ T_eq ≈ {info['Teq']:.0f} K")
 
         # add-to-DB (persists)
         last = st.session_state.get("manual_last")
@@ -686,6 +700,5 @@ if page == "Home":
 elif page == "Prediction":
     render_prediction()
 else:
-    # if a model is loaded, use its classes for P() columns; else none
     classes = st.session_state.get("classes", [])
     render_db_view(classes)
