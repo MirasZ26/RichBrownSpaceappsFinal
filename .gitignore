@@ -1,0 +1,14 @@
+# virtual envs
+venv/
+.venv/
+env/
+myenv/
+
+# Python junk
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
